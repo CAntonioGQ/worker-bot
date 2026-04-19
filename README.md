@@ -14,7 +14,8 @@ El objetivo es poder mover varios proyectos desde el celular, sin abrir la lapto
 | 1 | PoC end-to-end: Telegram ↔ Aider ↔ DeepSeek | ✅ |
 | 2 | Multi-sesión y cambio de proyecto | ✅ |
 | 3 | Crons proactivos con APScheduler | ✅ |
-| 4 | Hardening: multi-usuario, autoarranque, logs rotativos | Pendiente |
+| 4 | Hardening: multi-usuario, autoarranque, logs rotativos | ✅ |
+| 5 | Deploy (Docker + VPS) | Pendiente |
 
 ---
 
@@ -74,7 +75,7 @@ cp .env.example .env
 |----------|-------------|
 | `OPENROUTER_API_KEY` | API key de OpenRouter |
 | `TELEGRAM_BOT_TOKEN` | Token del bot (BotFather) |
-| `TELEGRAM_ALLOWED_USER_ID` | Tu user ID numérico de Telegram |
+| `TELEGRAM_ALLOWED_USER_IDS` | User IDs autorizados, separados por coma (ej. `12345,67890`). Se acepta también el nombre legacy `TELEGRAM_ALLOWED_USER_ID` con un solo valor |
 | `AIDER_MODEL` | Modelo principal. Default: `openrouter/deepseek/deepseek-chat` |
 | `AIDER_WEAK_MODEL` | Modelo para tareas menores. Default: igual al principal |
 | `PROJECT_AVI_WEBAPP` | Ruta absoluta al proyecto webapp |
@@ -100,6 +101,7 @@ En Telegram, habla con tu bot:
 |---------|-------------|
 | `/start` | Mensaje de bienvenida + lista de comandos |
 | `/ping` | Responde `pong` (test de vida) |
+| `/whoami` | Muestra tu ID de Telegram y si estás autorizado |
 | `/projects` | Lista proyectos y marca el activo |
 | `/current` | Muestra proyecto activo y su ruta |
 | `/use <nombre>` | Cambia el proyecto activo |
@@ -142,22 +144,87 @@ Zona horaria: `America/Mexico_City` (configurable en `crons.py`).
 ```
 worker-bot/
 ├── main.py              # entry point
-├── bot.py               # handlers de Telegram
+├── bot.py               # handlers de Telegram + error handler + logging rotativo
 ├── aider_runner.py      # wrapper subprocess de Aider
 ├── config.py            # carga .env
 ├── db.py                # SQLite (chat_state)
 ├── crons.py             # APScheduler + tabla crons
 ├── locks.py             # locks por proyecto
+├── run.ps1              # wrapper PowerShell con restart-on-crash
 ├── pyproject.toml       # deps + config de pytest
 ├── .env                 # secretos (gitignored)
 ├── .env.example         # plantilla de .env
 ├── sessions.db          # DB SQLite (gitignored)
+├── logs/                # logs rotativos (gitignored)
 └── tests/
     ├── conftest.py
     ├── test_aider_runner.py
+    ├── test_config.py
     ├── test_db.py
     └── test_crons.py
 ```
+
+---
+
+## Despliegue local (Windows)
+
+Para que el bot sobreviva reboots y reinicios, usa `run.ps1` (wrapper que relanza el proceso si se cae) junto con el Programador de tareas de Windows.
+
+### 1. Probar manualmente el wrapper
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Users\cruza\worker-bot\run.ps1
+```
+
+Si matas el proceso con Ctrl+C, el wrapper lo relanzará a los 10 segundos. Para salir definitivamente, cierra la ventana de PowerShell.
+
+### 2. Registrar como tarea programada
+
+Con PowerShell (como administrador):
+
+```powershell
+schtasks /Create `
+    /TN "WorkerBot" `
+    /TR "powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\Users\cruza\worker-bot\run.ps1" `
+    /SC ONLOGON `
+    /RL HIGHEST `
+    /F
+```
+
+Esto lanza el bot cada vez que inicias sesión en Windows. Para iniciar ya mismo sin reiniciar:
+
+```powershell
+schtasks /Run /TN "WorkerBot"
+```
+
+Para detener / eliminar la tarea:
+
+```powershell
+schtasks /End /TN "WorkerBot"
+schtasks /Delete /TN "WorkerBot" /F
+```
+
+### 3. Logs
+
+Los logs rotan a media noche y se conservan 7 días:
+
+```
+worker-bot/logs/
+├── bot.log           # día actual
+├── bot.log.2026-04-18
+├── bot.log.2026-04-17
+└── ...
+```
+
+Ante un error no manejado, el bot loguea el traceback en `bot.log` **y** manda un resumen por Telegram al usuario que causó el error.
+
+### 4. Multi-usuario
+
+Cada usuario autorizado en `TELEGRAM_ALLOWED_USER_IDS` tiene su propio estado (proyecto activo, crons) porque se identifica por su `chat_id` privado con el bot. Ninguno ve los crons ni el historial del otro.
+
+Para que un nuevo usuario se autorice:
+1. Le pide a Antonio agregar su `user_id` al `.env`.
+2. El nuevo usuario abre chat con el bot y usa `/whoami` para verificar que ya está autorizado.
 
 ---
 
@@ -217,14 +284,7 @@ Un uso cotidiano de 50 mensajes/día cuesta aprox **$3 USD / mes**.
 
 ## Roadmap
 
-**Fase 4 (pendiente):**
-- Lista de usuarios autorizados en `.env`
-- Tarea programada de Windows para autoarranque
-- Reinicio automático ante crash
-- Logs rotativos (`logs/bot.log`)
-- Error handler global que manda errores a Telegram
-
-**Futuro (Fase 5+):**
+**Fase 5 (pendiente):**
 - Deploy a VPS con Docker
 - Sesiones concurrentes por contenedor
 - Cambio dinámico de modelo por comando

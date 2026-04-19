@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault("OPENROUTER_API_KEY", "test-key")
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "000:test")
-os.environ.setdefault("TELEGRAM_ALLOWED_USER_ID", "0")
+os.environ.setdefault("TELEGRAM_ALLOWED_USER_IDS", "0,1")
 os.environ.setdefault("PROJECT_AVI_WEBAPP", "/tmp/webapp")
 os.environ.setdefault("PROJECT_AVI_ORCHESTRATOR", "/tmp/orch")
 

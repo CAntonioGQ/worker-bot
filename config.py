@@ -6,7 +6,15 @@ load_dotenv()
 
 OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-TELEGRAM_ALLOWED_USER_ID = int(os.environ["TELEGRAM_ALLOWED_USER_ID"])
+
+_raw_ids = os.environ.get("TELEGRAM_ALLOWED_USER_IDS") or os.environ.get("TELEGRAM_ALLOWED_USER_ID", "")
+TELEGRAM_ALLOWED_USER_IDS: set[int] = {
+    int(x) for x in _raw_ids.split(",") if x.strip()
+}
+if not TELEGRAM_ALLOWED_USER_IDS:
+    raise RuntimeError(
+        "TELEGRAM_ALLOWED_USER_IDS no definido. Pon uno o varios IDs separados por coma en .env"
+    )
 
 AIDER_MODEL = os.environ.get("AIDER_MODEL", "openrouter/deepseek/deepseek-chat")
 AIDER_WEAK_MODEL = os.environ.get("AIDER_WEAK_MODEL", AIDER_MODEL)
