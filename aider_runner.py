@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from config import AIDER_MODEL, AIDER_WEAK_MODEL, OPENROUTER_API_KEY
@@ -23,9 +24,51 @@ NOISE_PREFIXES = (
     "https://aider.chat",
     "Update:",
     "Use /help",
+    "Tokens:",
+    "Cost:",
 )
 
 PROGRESS_OVERWRITE_RE = re.compile(r"[^\r\n]*\r(?!\n)")
+
+_TOKEN_RE = re.compile(
+    r"Tokens:\s*([\d.,]+)\s*([kKmM]?)\s*sent[^\d]*([\d.,]+)\s*([kKmM]?)\s*received",
+    re.IGNORECASE,
+)
+_COST_RE = re.compile(r"Cost:\s*\$([\d.]+)\s*message", re.IGNORECASE)
+
+
+@dataclass
+class AiderResult:
+    output: str
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
+
+    def __str__(self) -> str:
+        return self.output
+
+
+def _to_int(num: str, suffix: str) -> int:
+    try:
+        base = float(num.replace(",", ""))
+    except ValueError:
+        return 0
+    mult = {"k": 1_000, "K": 1_000, "m": 1_000_000, "M": 1_000_000}.get(suffix, 1)
+    return int(base * mult)
+
+
+def _parse_usage(raw: str) -> tuple[int, int, float]:
+    tokens_in = tokens_out = 0
+    cost = 0.0
+    for m in _TOKEN_RE.finditer(raw):
+        tokens_in += _to_int(m.group(1), m.group(2))
+        tokens_out += _to_int(m.group(3), m.group(4))
+    for m in _COST_RE.finditer(raw):
+        try:
+            cost += float(m.group(1))
+        except ValueError:
+            pass
+    return tokens_in, tokens_out, cost
 
 
 def clean_output(raw: str) -> str:
@@ -47,7 +90,24 @@ def clean_output(raw: str) -> str:
     return cleaned
 
 
-async def run_aider(project_path: Path, message: str, timeout: int = 300) -> str:
+def _extra_read_files(project_path: Path) -> list[str]:
+    """Archivos de contexto que cargamos a Aider si existen en el proyecto.
+
+    CLAUDE.md (convenciones de Claude Code) y CONVENTIONS.md (nativo de Aider)
+    se inyectan con --read para que Aider los considere como contexto read-only.
+    """
+    candidates = ("CLAUDE.md", "CONVENTIONS.md", ".aider.conventions.md")
+    found = []
+    for name in candidates:
+        p = project_path / name
+        if p.exists() and p.is_file():
+            found.append(str(p))
+    return found
+
+
+async def run_aider(
+    project_path: Path, message: str, timeout: int = 300
+) -> AiderResult:
     cmd = [
         "aider",
         "--model", AIDER_MODEL,
@@ -60,6 +120,8 @@ async def run_aider(project_path: Path, message: str, timeout: int = 300) -> str
         "--no-stream",
         "--no-check-update",
     ]
+    for extra in _extra_read_files(project_path):
+        cmd.extend(["--read", extra])
 
     env = {
         **os.environ,
@@ -83,7 +145,14 @@ async def run_aider(project_path: Path, message: str, timeout: int = 300) -> str
     except asyncio.TimeoutError:
         proc.kill()
         await proc.communicate()
-        return f"[timeout después de {timeout}s]"
+        return AiderResult(output=f"[timeout después de {timeout}s]")
 
     raw = stdout.decode("utf-8", errors="replace")
-    return clean_output(raw) or "[sin respuesta]"
+    tokens_in, tokens_out, cost = _parse_usage(raw)
+    cleaned = clean_output(raw) or "[sin respuesta]"
+    return AiderResult(
+        output=cleaned,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        cost_usd=cost,
+    )

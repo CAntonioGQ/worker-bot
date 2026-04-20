@@ -1,4 +1,4 @@
-from aider_runner import clean_output
+from aider_runner import clean_output, _parse_usage, _extra_read_files
 
 
 def test_empty_input_returns_empty():
@@ -38,12 +38,46 @@ def test_strips_tqdm_progress_bars_with_carriage_return():
     assert "Respuesta final." in out
 
 
-def test_preserves_tokens_and_cost_line():
+def test_filters_tokens_and_cost_line():
+    # tokens/cost ahora se reportan aparte via _parse_usage; se filtran del output
     raw = "\nEsta es la respuesta.\n\nTokens: 11k sent, 40 received. Cost: $0.0016 message.\n"
     out = clean_output(raw)
     assert "Esta es la respuesta." in out
-    assert "Tokens:" in out
-    assert "Cost: $0.0016" in out
+    assert "Tokens:" not in out
+    assert "Cost:" not in out
+
+
+def test_parse_usage_extracts_tokens_and_cost():
+    raw = "Tokens: 11k sent, 40 received. Cost: $0.0016 message, $0.01 session."
+    tin, tout, cost = _parse_usage(raw)
+    assert tin == 11_000
+    assert tout == 40
+    assert cost == 0.0016
+
+
+def test_parse_usage_sums_multiple_occurrences():
+    raw = (
+        "Tokens: 1.2k sent, 100 received. Cost: $0.0010 message.\n"
+        "Tokens: 500 sent, 30 received. Cost: $0.0005 message.\n"
+    )
+    tin, tout, cost = _parse_usage(raw)
+    assert tin == 1_700
+    assert tout == 130
+    assert abs(cost - 0.0015) < 1e-9
+
+
+def test_parse_usage_no_match_returns_zeros():
+    assert _parse_usage("sin usage aquí") == (0, 0, 0.0)
+
+
+def test_extra_read_files_detects_claude_md(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("# conv", encoding="utf-8")
+    found = _extra_read_files(tmp_path)
+    assert any("CLAUDE.md" in f for f in found)
+
+
+def test_extra_read_files_empty_when_absent(tmp_path):
+    assert _extra_read_files(tmp_path) == []
 
 
 def test_collapses_triple_blank_lines():

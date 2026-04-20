@@ -25,3 +25,23 @@ PROJECTS: dict[str, Path] = {
 }
 
 DEFAULT_PROJECT = "webapp"
+
+DAILY_BUDGET_USD = float(os.environ.get("DAILY_BUDGET_USD", "1.00"))
+
+HEARTBEAT_CRON = os.environ.get("HEARTBEAT_CRON", "0 8 * * *").strip()
+
+_hb_chat = os.environ.get("HEARTBEAT_CHAT_ID", "").strip()
+HEARTBEAT_CHAT_ID: int | None = int(_hb_chat) if _hb_chat else (
+    min(TELEGRAM_ALLOWED_USER_IDS) if TELEGRAM_ALLOWED_USER_IDS else None
+)
+
+
+def _test_cmd_for(project: str) -> str | None:
+    key = f"PROJECT_{project.upper()}_TEST_CMD"
+    val = os.environ.get(key, "").strip()
+    return val or None
+
+
+PROJECT_TEST_CMDS: dict[str, str | None] = {
+    name: _test_cmd_for(name) for name in PROJECTS
+}

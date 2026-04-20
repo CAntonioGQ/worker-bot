@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -15,6 +16,8 @@ from telegram.ext import (
 )
 
 from aider_runner import run_aider
+from approvals import get_pending, list_pending, set_status as set_pending_status
+from budget import budget_summary, over_budget, record_usage
 from config import (
     DEFAULT_PROJECT,
     PROJECTS,
@@ -30,12 +33,20 @@ from crons import (
     load_and_schedule_all,
     run_cron_job,
     schedule_cron,
+    schedule_heartbeat,
     scheduler,
     unschedule_cron,
 )
 from db import get_project, init_db, set_project
 from git_runner import current_branch, is_dirty, run_git
 from locks import lock_for
+from suggestions import (
+    get_suggestion,
+    list_suggestions,
+    set_suggestion_status,
+    summarize,
+)
+from test_runner import run_tests
 
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -92,6 +103,15 @@ def _parse_command_args(text: str) -> str:
     return parts[1] if len(parts) == 2 else ""
 
 
+async def _send_chunked(update_or_bot, chat_id: int | None, text: str) -> None:
+    for i in range(0, len(text), MAX_TG_LEN):
+        chunk = text[i : i + MAX_TG_LEN]
+        if hasattr(update_or_bot, "message") and update_or_bot.message is not None:
+            await update_or_bot.message.reply_text(chunk)
+        else:
+            await update_or_bot.send_message(chat_id=chat_id, text=chunk)
+
+
 async def start(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
         return
@@ -106,6 +126,8 @@ async def start(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"Crons (proactividad):\n"
         f"  /cron_add <proyecto>|<cron>|<prompt>\n"
         f"  /cron_list /cron_del <id> /cron_run <id>\n\n"
+        f"Tareas y aprobaciones:\n"
+        f"  /tasks /do <id> /pending /budget\n\n"
         f"Git:\n"
         f"  /git_status /git_branches /git_switch <rama>\n"
         f"  /git_log [n] /git_diff [target] /git_fetch\n"
@@ -294,6 +316,219 @@ async def cron_run_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def budget_cmd(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    await update.message.reply_text(budget_summary(update.effective_chat.id))
+
+
+async def tasks_cmd(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    rows = list_suggestions(update.effective_chat.id)
+    if not rows:
+        await update.message.reply_text(
+            "No hay sugerencias pendientes. Los crons van guardando aquí lo que proponen."
+        )
+        return
+    lines = [f"Sugerencias pendientes ({len(rows)}):\n"]
+    for r in rows:
+        snip = summarize(r["text"], max_chars=120)
+        src = f" · cron #{r['source_cron_id']}" if r["source_cron_id"] else ""
+        lines.append(f"#{r['id']} [{r['project']}]{src}\n  {snip}")
+    lines.append("\nEjecuta una con /do <id> · Descártala con /skip <id>")
+    await _send_chunked(update, None, "\n".join(lines))
+
+
+async def do_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    if not ctx.args or not ctx.args[0].isdigit():
+        await update.message.reply_text("Uso: /do <id>")
+        return
+    task_id = int(ctx.args[0])
+    row = get_suggestion(task_id)
+    if not row or row["chat_id"] != update.effective_chat.id:
+        await update.message.reply_text(f"No existe sugerencia #{task_id}.")
+        return
+    if row["status"] != "pending":
+        await update.message.reply_text(
+            f"Sugerencia #{task_id} ya está en estado '{row['status']}'."
+        )
+        return
+
+    project = row["project"]
+    path = PROJECTS.get(project)
+    if not path:
+        await update.message.reply_text(f"Proyecto '{project}' ya no existe.")
+        return
+    if over_budget(update.effective_chat.id):
+        await update.message.reply_text(
+            f"⚠️ Cap diario alcanzado. {budget_summary(update.effective_chat.id)}"
+        )
+        return
+
+    await update.message.reply_text(
+        f"Ejecutando #{task_id} sobre {project}…"
+    )
+    async with lock_for(project):
+        result = await run_aider(path, row["text"])
+    record_usage(
+        update.effective_chat.id, result.tokens_in, result.tokens_out,
+        result.cost_usd, source=f"do:{task_id}",
+    )
+    set_suggestion_status(task_id, "done")
+    await _send_chunked(update, None, result.output)
+
+
+async def skip_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    if not ctx.args or not ctx.args[0].isdigit():
+        await update.message.reply_text("Uso: /skip <id>")
+        return
+    task_id = int(ctx.args[0])
+    row = get_suggestion(task_id)
+    if not row or row["chat_id"] != update.effective_chat.id:
+        await update.message.reply_text(f"No existe sugerencia #{task_id}.")
+        return
+    set_suggestion_status(task_id, "rejected")
+    await update.message.reply_text(f"🗑️ Sugerencia #{task_id} descartada.")
+
+
+async def pending_cmd(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    rows = list_pending(update.effective_chat.id)
+    if not rows:
+        await update.message.reply_text("No hay cambios pendientes de aprobación.")
+        return
+    lines = [f"Cambios pendientes ({len(rows)}):\n"]
+    for r in rows:
+        src = f" · cron #{r['source_cron_id']}" if r["source_cron_id"] else ""
+        lines.append(
+            f"#{r['id']} [{r['project']}] rama `{r['branch']}`{src}\n"
+            f"  {r['created_at'][:16]}"
+        )
+    lines.append(
+        "\nUsa los botones del mensaje original o manualmente:\n"
+        "  /git_switch <rama> para revisar."
+    )
+    await _send_chunked(update, None, "\n".join(lines))
+
+
+async def pending_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    if not _authorized(update):
+        await query.answer("no autorizado", show_alert=True)
+        return
+
+    try:
+        _, raw_id, action = query.data.split(":", 2)
+        pending_id = int(raw_id)
+    except (ValueError, AttributeError):
+        await query.answer("callback inválido", show_alert=True)
+        return
+
+    row = get_pending(pending_id)
+    if not row or row["chat_id"] != update.effective_chat.id:
+        await query.answer(f"pending #{pending_id} no existe", show_alert=True)
+        return
+
+    project = row["project"]
+    path = PROJECTS.get(project)
+    if not path:
+        await query.answer(f"proyecto '{project}' ya no existe", show_alert=True)
+        return
+
+    await query.answer()
+
+    if action == "diff":
+        async with lock_for(project):
+            _, out = await run_git(path, ["log", "-p", "-1", row["branch"]])
+        await _send_chunked(
+            ctx.bot, row["chat_id"],
+            f"📋 Diff de #{pending_id} (rama {row['branch']}):\n\n{out[:6000] or '(sin diff)'}",
+        )
+
+    elif action == "tests":
+        await ctx.bot.send_message(
+            chat_id=row["chat_id"], text=f"🧪 Corriendo tests en rama {row['branch']}…"
+        )
+        async with lock_for(project):
+            original = await current_branch(path)
+            dirty, _ = await is_dirty(path)
+            if dirty:
+                await ctx.bot.send_message(
+                    chat_id=row["chat_id"],
+                    text=f"❌ No puedo cambiar a {row['branch']}: hay cambios sin commitear en {original}.",
+                )
+                return
+            code, out = await run_git(path, ["checkout", row["branch"]])
+            if code != 0:
+                await ctx.bot.send_message(
+                    chat_id=row["chat_id"],
+                    text=f"❌ No pude cambiar a {row['branch']}:\n{out}",
+                )
+                return
+            try:
+                ok, cmd, output = await run_tests(project, path)
+            finally:
+                await run_git(path, ["checkout", original])
+        status = "✅" if ok else "❌"
+        await _send_chunked(
+            ctx.bot, row["chat_id"],
+            f"{status} Tests ({cmd}) en {row['branch']}:\n\n{output}",
+        )
+
+    elif action == "push":
+        async with lock_for(project):
+            original = await current_branch(path)
+            code, out = await run_git(path, ["checkout", row["branch"]])
+            if code != 0:
+                await ctx.bot.send_message(
+                    chat_id=row["chat_id"],
+                    text=f"❌ No pude cambiar a {row['branch']}:\n{out}",
+                )
+                return
+            try:
+                code, out = await run_git(
+                    path, ["push", "-u", "origin", row["branch"]], timeout=60,
+                )
+            finally:
+                await run_git(path, ["checkout", original])
+        if code == 0:
+            set_pending_status(pending_id, "pushed")
+            await ctx.bot.send_message(
+                chat_id=row["chat_id"],
+                text=f"✅ Push OK · {row['branch']}\n\n{out}\n\nAbre PR a {row['base_branch'] or 'main'}.",
+            )
+        else:
+            await _send_chunked(
+                ctx.bot, row["chat_id"],
+                f"❌ Push falló en {row['branch']}:\n{out}",
+            )
+
+    elif action == "reject":
+        async with lock_for(project):
+            original = await current_branch(path)
+            if original == row["branch"]:
+                await run_git(path, ["checkout", row["base_branch"] or "main"])
+            await run_git(path, ["branch", "-D", row["branch"]])
+        set_pending_status(pending_id, "rejected")
+        await ctx.bot.send_message(
+            chat_id=row["chat_id"],
+            text=f"🗑️ Descarté #{pending_id}, rama {row['branch']} eliminada.",
+        )
+
+    else:
+        await ctx.bot.send_message(
+            chat_id=row["chat_id"], text=f"Acción desconocida: {action}"
+        )
+
+
 async def _send_git_output(update: Update, title: str, output: str) -> None:
     body = output or "(sin output)"
     full = f"{title}\n\n{body}"
@@ -463,6 +698,18 @@ async def git_push_cmd(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def tests_cmd(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authorized(update):
+        return
+    name = _active_project(update.effective_chat.id)
+    path = PROJECTS[name]
+    await update.message.reply_text(f"🧪 Corriendo tests en {name}…")
+    async with lock_for(name):
+        ok, cmd, out = await run_tests(name, path)
+    status = "✅" if ok else "❌"
+    await _send_git_output(update, f"{status} Tests ({cmd}) en {name}:", out)
+
+
 async def on_message(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
         log.warning("usuario no autorizado %s", update.effective_user.id if update.effective_user else "?")
@@ -473,6 +720,13 @@ async def on_message(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     chat_id = update.effective_chat.id
+    if over_budget(chat_id):
+        await update.message.reply_text(
+            f"⚠️ Cap diario alcanzado. {budget_summary(chat_id)}\n"
+            "Aumenta DAILY_BUDGET_USD en .env o espera a medianoche UTC."
+        )
+        return
+
     name = _active_project(chat_id)
     project_path: Path = PROJECTS[name]
 
@@ -485,10 +739,18 @@ async def on_message(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"Mandando a Aider ({name})…")
 
         log.info("aider@%s: %s", name, text[:100])
-        output = await run_aider(project_path, text)
+        result = await run_aider(project_path, text)
 
+    record_usage(
+        chat_id, result.tokens_in, result.tokens_out, result.cost_usd,
+        source="chat",
+    )
+
+    output = result.output
     for chunk_start in range(0, len(output), MAX_TG_LEN):
         await update.message.reply_text(output[chunk_start : chunk_start + MAX_TG_LEN])
+    if result.cost_usd > 0:
+        await update.message.reply_text(f"💰 ${result.cost_usd:.4f}")
 
 
 async def _error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -517,7 +779,8 @@ async def _on_startup(app: Application) -> None:
     init_crons_db()
     scheduler.start()
     n = load_and_schedule_all(app.bot)
-    log.info("scheduler iniciado, %d crons cargados", n)
+    hb = schedule_heartbeat(app.bot)
+    log.info("scheduler iniciado, %d crons cargados, heartbeat=%s", n, hb)
     log.info("usuarios autorizados: %s", sorted(TELEGRAM_ALLOWED_USER_IDS))
 
 
@@ -546,6 +809,12 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("cron_list", cron_list_cmd))
     app.add_handler(CommandHandler("cron_del", cron_del_cmd))
     app.add_handler(CommandHandler("cron_run", cron_run_cmd))
+    app.add_handler(CommandHandler("budget", budget_cmd))
+    app.add_handler(CommandHandler("tasks", tasks_cmd))
+    app.add_handler(CommandHandler("do", do_cmd))
+    app.add_handler(CommandHandler("skip", skip_cmd))
+    app.add_handler(CommandHandler("pending", pending_cmd))
+    app.add_handler(CommandHandler("tests", tests_cmd))
     app.add_handler(CommandHandler("git_status", git_status_cmd))
     app.add_handler(CommandHandler("git_branches", git_branches_cmd))
     app.add_handler(CommandHandler("git_switch", git_switch_cmd))
@@ -554,6 +823,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("git_fetch", git_fetch_cmd))
     app.add_handler(CommandHandler("git_commit", git_commit_cmd))
     app.add_handler(CommandHandler("git_push", git_push_cmd))
+    app.add_handler(CallbackQueryHandler(pending_callback, pattern=r"^pc:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     app.add_error_handler(_error_handler)
     return app
