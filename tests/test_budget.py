@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
-from budget import over_budget, record_usage, spent_today
-from db import _conn, init_db
+from workerbot.core.budget import over_budget
+from workerbot.storage.db import _conn, init_db
+from workerbot.storage.usage import record_usage, spent_today
 
 
 def test_spent_today_zero_when_no_records(tmp_db):
@@ -25,7 +26,7 @@ def test_spent_today_isolated_per_chat(tmp_db):
 
 
 def test_over_budget_false_below_cap(tmp_db, monkeypatch):
-    import budget
+    from workerbot.core import budget
     monkeypatch.setattr(budget, "DAILY_BUDGET_USD", 1.0)
     init_db()
     record_usage(chat_id=1, tokens_in=0, tokens_out=0, cost_usd=0.5, source="chat")
@@ -33,7 +34,7 @@ def test_over_budget_false_below_cap(tmp_db, monkeypatch):
 
 
 def test_over_budget_true_at_or_above_cap(tmp_db, monkeypatch):
-    import budget
+    from workerbot.core import budget
     monkeypatch.setattr(budget, "DAILY_BUDGET_USD", 1.0)
     init_db()
     record_usage(chat_id=1, tokens_in=0, tokens_out=0, cost_usd=1.0, source="chat")
@@ -41,7 +42,7 @@ def test_over_budget_true_at_or_above_cap(tmp_db, monkeypatch):
 
 
 def test_over_budget_disabled_when_cap_is_zero(tmp_db, monkeypatch):
-    import budget
+    from workerbot.core import budget
     monkeypatch.setattr(budget, "DAILY_BUDGET_USD", 0.0)
     init_db()
     record_usage(chat_id=1, tokens_in=0, tokens_out=0, cost_usd=999, source="chat")

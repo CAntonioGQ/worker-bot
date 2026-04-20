@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from config import AIDER_MODEL, AIDER_WEAK_MODEL, OPENROUTER_API_KEY
+from workerbot.config import AIDER_MODEL, AIDER_WEAK_MODEL, OPENROUTER_API_KEY
 
 NOISE_PREFIXES = (
     "Aider v",

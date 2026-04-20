@@ -1,4 +1,4 @@
-from aider_runner import clean_output, _parse_usage, _extra_read_files
+from workerbot.runners.aider import _extra_read_files, _parse_usage, clean_output
 
 
 def test_empty_input_returns_empty():
@@ -39,7 +39,6 @@ def test_strips_tqdm_progress_bars_with_carriage_return():
 
 
 def test_filters_tokens_and_cost_line():
-    # tokens/cost ahora se reportan aparte via _parse_usage; se filtran del output
     raw = "\nEsta es la respuesta.\n\nTokens: 11k sent, 40 received. Cost: $0.0016 message.\n"
     out = clean_output(raw)
     assert "Esta es la respuesta." in out

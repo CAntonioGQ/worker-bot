@@ -1,12 +1,11 @@
-from db import init_db
-from suggestions import (
+from workerbot.core.memory import memory_block, summarize
+from workerbot.storage.db import init_db
+from workerbot.storage.suggestions import (
     add_suggestion,
     get_suggestion,
     list_suggestions,
-    memory_block,
     record_cron_run,
     set_suggestion_status,
-    summarize,
 )
 
 
@@ -54,7 +53,6 @@ def test_memory_block_returns_recent_summaries(tmp_db):
         )
     block = memory_block(cron_id=1, limit=3)
     assert "Historial reciente" in block
-    # incluye las 3 más recientes (i=3, 2, 1) y excluye i=0
     assert "sugerencia 3" in block
     assert "sugerencia 2" in block
     assert "sugerencia 1" in block

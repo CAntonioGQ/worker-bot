@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from db import _conn
+from workerbot.storage.db import _conn
 
 
 def _now() -> str:
@@ -49,18 +49,23 @@ def recent_runs_for_cron(cron_id: int, limit: int = 3) -> list:
         ).fetchall()
 
 
-def memory_block(cron_id: int, limit: int = 3) -> str:
-    """Texto para inyectar en el prompt: últimas ejecuciones de este cron."""
-    rows = recent_runs_for_cron(cron_id, limit)
-    if not rows:
-        return ""
-    lines = ["\n\n--- Historial reciente de este cron (no repetir sugerencias) ---"]
-    for r in rows:
-        summary = (r["summary"] or "").strip()
-        if summary:
-            date = r["ran_at"][:10]
-            lines.append(f"[{date}] {summary[:300]}")
-    return "\n".join(lines) if len(lines) > 1 else ""
+def last_run_time() -> str | None:
+    with _conn() as c:
+        row = c.execute(
+            "SELECT ran_at FROM cron_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    return row["ran_at"] if row else None
+
+
+def last_failed_run():
+    with _conn() as c:
+        return c.execute(
+            """
+            SELECT ran_at, cron_id, summary FROM cron_runs
+            WHERE output LIKE '%timeout%' OR output LIKE '%[sin respuesta]%'
+            ORDER BY id DESC LIMIT 1
+            """
+        ).fetchone()
 
 
 def add_suggestion(
@@ -104,15 +109,3 @@ def set_suggestion_status(task_id: int, status: str) -> None:
             "UPDATE suggested_tasks SET status = ? WHERE id = ?",
             (status, task_id),
         )
-
-
-def summarize(output: str, max_chars: int = 220) -> str:
-    """Toma las primeras líneas significativas del output de Aider como resumen."""
-    text = (output or "").strip()
-    if not text:
-        return "(sin respuesta)"
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    summary = " · ".join(lines[:3])
-    if len(summary) > max_chars:
-        summary = summary[: max_chars - 1].rstrip() + "…"
-    return summary

@@ -1,6 +1,6 @@
 import pytest
 
-from test_runner import _detect_test_cmd, _resolve_cmd, run_tests
+from workerbot.runners.test_runner import _detect_test_cmd, _resolve_cmd, run_tests
 
 
 def test_detect_pytest_from_pyproject(tmp_path):
@@ -37,7 +37,7 @@ def test_detect_none_when_no_markers(tmp_path):
 
 def test_override_takes_precedence(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
-    import test_runner
+    from workerbot.runners import test_runner
     monkeypatch.setitem(test_runner.PROJECT_TEST_CMDS, "webapp", "make test")
     cmd = _resolve_cmd("webapp", tmp_path)
     assert cmd == ["make", "test"]

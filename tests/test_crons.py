@@ -1,19 +1,17 @@
 import pytest
 
-from crons import (
+from workerbot.storage.crons import (
     add_cron,
     delete_cron,
     get_cron,
-    init_crons_db,
     list_crons,
 )
-from db import init_db
+from workerbot.storage.db import init_db
 
 
 @pytest.fixture
 def db_ready(tmp_db):
     init_db()
-    init_crons_db()
 
 
 def test_add_cron_returns_autoincrement_id(db_ready):

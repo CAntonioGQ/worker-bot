@@ -1,5 +1,4 @@
 import importlib
-import os
 
 import pytest
 
@@ -7,7 +6,7 @@ import pytest
 def _reload_config(monkeypatch, env: dict[str, str]) -> object:
     for k in ("TELEGRAM_ALLOWED_USER_ID", "TELEGRAM_ALLOWED_USER_IDS"):
         monkeypatch.setenv(k, env.get(k, ""))
-    import config
+    from workerbot import config
     return importlib.reload(config)
 
 

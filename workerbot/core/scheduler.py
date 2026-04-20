@@ -5,80 +5,32 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
-from aider_runner import run_aider
-from approvals import create_pending
-from budget import budget_summary, over_budget, record_usage
-from config import (
+from workerbot.config import (
     HEARTBEAT_CHAT_ID,
     HEARTBEAT_CRON,
     PROJECTS,
+    TIMEZONE,
 )
-from db import _conn
-from git_runner import current_branch, is_dirty, run_git
-from locks import lock_for
-from suggestions import (
+from workerbot.core.budget import budget_summary, over_budget
+from workerbot.core.locks import lock_for
+from workerbot.core.memory import memory_block, summarize
+from workerbot.runners.aider import run_aider
+from workerbot.runners.git import current_branch, is_dirty, run_git
+from workerbot.storage.approvals import create_pending
+from workerbot.storage.crons import all_enabled_crons, count_enabled
+from workerbot.storage.suggestions import (
     add_suggestion,
-    memory_block,
+    last_failed_run,
+    last_run_time,
     record_cron_run,
-    summarize,
 )
+from workerbot.storage.usage import record_usage
 
-log = logging.getLogger("worker-bot.crons")
+log = logging.getLogger("worker-bot.scheduler")
 
-TIMEZONE = "America/Mexico_City"
-MAX_TG_LEN = 3800
 HEARTBEAT_JOB_ID = "heartbeat"
 
 scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-
-
-def init_crons_db() -> None:
-    with _conn() as c:
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS crons (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id INTEGER NOT NULL,
-                project TEXT NOT NULL,
-                cron_expr TEXT NOT NULL,
-                prompt TEXT NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-
-
-def add_cron(chat_id: int, project: str, cron_expr: str, prompt: str) -> int:
-    now = datetime.now(_tz.utc).isoformat()
-    with _conn() as c:
-        cur = c.execute(
-            """
-            INSERT INTO crons (chat_id, project, cron_expr, prompt, enabled, created_at)
-            VALUES (?, ?, ?, ?, 1, ?)
-            """,
-            (chat_id, project, cron_expr, prompt, now),
-        )
-        return cur.lastrowid
-
-
-def list_crons(chat_id: int) -> list:
-    with _conn() as c:
-        return c.execute(
-            "SELECT * FROM crons WHERE chat_id = ? ORDER BY id",
-            (chat_id,),
-        ).fetchall()
-
-
-def get_cron(cron_id: int):
-    with _conn() as c:
-        return c.execute("SELECT * FROM crons WHERE id = ?", (cron_id,)).fetchone()
-
-
-def delete_cron(cron_id: int) -> bool:
-    with _conn() as c:
-        cur = c.execute("DELETE FROM crons WHERE id = ?", (cron_id,))
-        return cur.rowcount > 0
 
 
 def _branch_name(cron_id: int) -> str:
@@ -99,11 +51,6 @@ def _approval_keyboard(pending_id: int) -> InlineKeyboardMarkup:
             ],
         ]
     )
-
-
-async def _send_chunked(bot: Bot, chat_id: int, text: str) -> None:
-    for i in range(0, len(text), MAX_TG_LEN):
-        await bot.send_message(chat_id=chat_id, text=text[i : i + MAX_TG_LEN])
 
 
 async def run_cron_job(
@@ -127,8 +74,7 @@ async def run_cron_job(
         return
 
     await bot.send_message(
-        chat_id=chat_id,
-        text=f"🕒 Cron #{cron_id} ({project}) ejecutando…",
+        chat_id=chat_id, text=f"🕒 Cron #{cron_id} ({project}) ejecutando…"
     )
 
     async with lock_for(project):
@@ -207,7 +153,6 @@ async def run_cron_job(
         return
 
     assert result is not None
-
     short = summarize(result.output)
     record_cron_run(
         cron_id=cron_id, chat_id=chat_id, project=project,
@@ -246,30 +191,19 @@ async def run_cron_job(
 async def run_heartbeat(bot: Bot) -> None:
     if HEARTBEAT_CHAT_ID is None:
         return
-    with _conn() as c:
-        n_crons = c.execute(
-            "SELECT COUNT(*) AS n FROM crons WHERE enabled = 1"
-        ).fetchone()["n"]
-        last_error = c.execute(
-            """
-            SELECT ran_at, cron_id, summary FROM cron_runs
-            WHERE output LIKE '%timeout%' OR output LIKE '%[sin respuesta]%'
-            ORDER BY id DESC LIMIT 1
-            """
-        ).fetchone()
-        last_run = c.execute(
-            "SELECT ran_at FROM cron_runs ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+    n = count_enabled()
+    last = last_run_time()
+    failed = last_failed_run()
     lines = [
         "💓 Heartbeat worker-bot",
-        f"Crons activos: {n_crons}",
-        f"Último run: {last_run['ran_at'][:16] if last_run else '—'}",
+        f"Crons activos: {n}",
+        f"Último run: {last[:16] if last else '—'}",
         budget_summary(HEARTBEAT_CHAT_ID),
     ]
-    if last_error:
+    if failed:
         lines.append(
-            f"⚠️ Último posible error: cron #{last_error['cron_id']} "
-            f"@ {last_error['ran_at'][:16]}"
+            f"⚠️ Último posible error: cron #{failed['cron_id']} "
+            f"@ {failed['ran_at'][:16]}"
         )
     await bot.send_message(chat_id=HEARTBEAT_CHAT_ID, text="\n".join(lines))
 
@@ -311,13 +245,14 @@ def schedule_heartbeat(bot: Bot) -> bool:
 
 
 def load_and_schedule_all(bot: Bot) -> int:
-    with _conn() as c:
-        rows = c.execute("SELECT * FROM crons WHERE enabled = 1").fetchall()
     count = 0
-    for row in rows:
+    for row in all_enabled_crons():
         try:
             schedule_cron(bot, row)
             count += 1
         except Exception as e:
-            log.error("no pude programar cron %s (%s): %s", row["id"], row["cron_expr"], e)
+            log.error(
+                "no pude programar cron %s (%s): %s",
+                row["id"], row["cron_expr"], e,
+            )
     return count

@@ -21,3 +21,6 @@ dev = [
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+
+[tool.hatch.build.targets.wheel]
+packages = ["workerbot"]

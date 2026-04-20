@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from db import _conn
+from workerbot.storage.db import _conn
 
 
 def _now() -> str:

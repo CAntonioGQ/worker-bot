@@ -3,7 +3,7 @@ import os
 import shlex
 from pathlib import Path
 
-from config import PROJECT_TEST_CMDS
+from workerbot.config import PROJECT_TEST_CMDS
 
 
 def _detect_test_cmd(project_path: Path) -> list[str] | None:
@@ -67,7 +67,6 @@ async def run_tests(
         return False, cmd_str, f"[timeout tras {timeout}s]"
 
     out = stdout.decode("utf-8", errors="replace").strip()
-    # Output puede ser enorme: quedarnos con primeras y últimas líneas.
     lines = out.splitlines()
     if len(lines) > 80:
         out = "\n".join(lines[:30] + ["", "...(truncado)...", ""] + lines[-30:])

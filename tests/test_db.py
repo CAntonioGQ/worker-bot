@@ -1,6 +1,5 @@
-import pytest
-
-from db import get_project, init_db, set_project
+from workerbot.storage.chat_state import get_project, set_project
+from workerbot.storage.db import init_db
 
 
 def test_init_db_is_idempotent(tmp_db):

@@ -1,5 +1,10 @@
-from approvals import create_pending, get_pending, list_pending, set_status
-from db import init_db
+from workerbot.storage.approvals import (
+    create_pending,
+    get_pending,
+    list_pending,
+    set_status,
+)
+from workerbot.storage.db import init_db
 
 
 def _mk(chat_id=1, cron_id=5, branch="bot/cron-5-20260101-1200"):

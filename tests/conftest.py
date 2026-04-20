@@ -11,7 +11,7 @@ import pytest
 
 @pytest.fixture
 def tmp_db(tmp_path, monkeypatch):
-    import db
+    from workerbot.storage import db
 
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test_sessions.db")
     return tmp_path / "test_sessions.db"

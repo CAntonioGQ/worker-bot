@@ -1,4 +1,4 @@
-from bot import build_app
+from workerbot.app import build_app
 
 
 def main() -> None:
