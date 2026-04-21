@@ -28,10 +28,16 @@ async def cron_add_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "Uso: /cron_add <proyecto>|<cron>|<prompt>\n\n"
             "Ejemplos:\n"
             "  /cron_add webapp|0 9 * * *|Revisa TODOs y sugiere siguiente paso\n"
-            "  /cron_add orchestrator|*/30 * * * *|Lista cambios recientes\n\n"
+            "  /cron_add orchestrator|*/30 * * * *|Lista cambios recientes\n"
+            "  /cron_add webapp|0 8 * * *|@news day   (resumen noticias IA 24h)\n"
+            "  /cron_add webapp|0 8 * * 1|@news week  (digest semanal, lunes 8am)\n\n"
             f"Proyectos: {', '.join(PROJECTS.keys())}\n"
             "Zona horaria: America/Mexico_City\n"
-            "Formato cron: min hora dia_mes mes dia_semana"
+            "Formato cron: min hora dia_mes mes dia_semana\n\n"
+            "Prompts especiales:\n"
+            "  @news [day|week] [extra] — digest de RSS IA (no toca el repo)\n"
+            "  @heavy <prompt> — usa modelo potente (AIDER_HEAVY_MODEL)\n"
+            "  @weak <prompt>  — usa modelo barato (AIDER_WEAK_MODEL)"
         )
         return
     project, cron_expr, prompt = parts

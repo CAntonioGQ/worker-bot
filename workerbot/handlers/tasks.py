@@ -5,6 +5,7 @@ from workerbot.config import PROJECTS
 from workerbot.core.budget import budget_summary, over_budget
 from workerbot.core.locks import lock_for
 from workerbot.core.memory import summarize
+from workerbot.core.prompts import extract_model_marker
 from workerbot.handlers.base import authorized, reply_chunked
 from workerbot.runners.aider import run_aider
 from workerbot.storage.approvals import list_pending
@@ -62,9 +63,11 @@ async def do_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    await update.message.reply_text(f"Ejecutando #{task_id} sobre {project}…")
+    clean_text, model_override = extract_model_marker(row["text"])
+    tag = f" · 🔥 {model_override.split('/')[-1]}" if model_override else ""
+    await update.message.reply_text(f"Ejecutando #{task_id} sobre {project}{tag}…")
     async with lock_for(project):
-        result = await run_aider(path, row["text"])
+        result = await run_aider(path, clean_text or row["text"], model=model_override)
     record_usage(
         update.effective_chat.id, result.tokens_in, result.tokens_out,
         result.cost_usd, source=f"do:{task_id}",

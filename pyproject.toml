@@ -7,6 +7,8 @@ requires-python = ">=3.11"
 dependencies = [
     "aider-chat>=0.86.2",
     "apscheduler>=3.11.2",
+    "feedparser>=6.0.11",
+    "httpx>=0.28.0",
     "python-dotenv>=1.2.1",
     "python-telegram-bot>=22.7",
 ]

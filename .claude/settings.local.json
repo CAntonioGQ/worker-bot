@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(uv run *)"
+      "Bash(uv run *)",
+      "WebSearch",
+      "WebFetch(domain:openrouter.ai)",
+      "Bash(uv sync *)",
+      "WebFetch(domain:platform.minimax.io)"
     ]
   }
 }

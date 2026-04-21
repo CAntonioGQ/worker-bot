@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 from workerbot.config import PROJECTS
 from workerbot.core.budget import budget_summary, over_budget
 from workerbot.core.locks import lock_for
+from workerbot.core.prompts import extract_model_marker
 from workerbot.handlers.base import (
     active_project,
     authorized,
@@ -63,18 +64,27 @@ async def on_message(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     name = active_project(chat_id)
     project_path: Path = PROJECTS[name]
 
+    clean_text, model_override = extract_model_marker(text)
+    if not clean_text.strip():
+        await update.message.reply_text(
+            "Usa `@heavy <instrucción>` o `@weak <instrucción>` seguido del "
+            "prompt. Solo el marker no hace nada."
+        )
+        return
+
     lock = lock_for(name)
     if lock.locked():
         await update.message.reply_text(
             f"Esperando que termine la tarea previa en '{name}'…"
         )
 
+    tag = f" · 🔥 {model_override.split('/')[-1]}" if model_override else ""
     async with lock:
         await update.message.chat.send_action(ChatAction.TYPING)
-        await update.message.reply_text(f"Mandando a Aider ({name})…")
+        await update.message.reply_text(f"Mandando a Aider ({name}){tag}…")
 
-        log.info("aider@%s: %s", name, text[:100])
-        result = await run_aider(project_path, text)
+        log.info("aider@%s model=%s: %s", name, model_override or "default", clean_text[:100])
+        result = await run_aider(project_path, clean_text, model=model_override)
 
     record_usage(
         chat_id, result.tokens_in, result.tokens_out, result.cost_usd,

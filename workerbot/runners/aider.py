@@ -106,11 +106,14 @@ def _extra_read_files(project_path: Path) -> list[str]:
 
 
 async def run_aider(
-    project_path: Path, message: str, timeout: int = 300
+    project_path: Path,
+    message: str,
+    timeout: int = 300,
+    model: str | None = None,
 ) -> AiderResult:
     cmd = [
         "aider",
-        "--model", AIDER_MODEL,
+        "--model", model or AIDER_MODEL,
         "--weak-model", AIDER_WEAK_MODEL,
         "--message", message,
         "--yes-always",

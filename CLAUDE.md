@@ -37,10 +37,12 @@ workerbot/
 │   ├── budget.py
 │   ├── memory.py            # memory_block + summarize
 │   └── scheduler.py         # APScheduler + run_cron_job + heartbeat
-├── runners/          # subprocess wrappers, no DB
-│   ├── aider.py
-│   ├── git.py
-│   └── test_runner.py
+├── runners/          # subprocess / external wrappers, no DB
+│   ├── aider.py             # subprocess wrapper
+│   ├── git.py               # subprocess wrapper
+│   ├── test_runner.py       # subprocess wrapper
+│   ├── llm.py               # direct OpenRouter HTTP client (no Aider subprocess)
+│   └── news.py              # RSS fetch + parse + prompt-format
 └── handlers/         # telegram handlers by feature
     ├── base.py              # authorized(), reply_chunked, active_project
     ├── session.py           # start/ping/whoami/projects/current/use/reset
@@ -61,14 +63,15 @@ workerbot/
 
 Each cron run in `core.scheduler.run_cron_job` follows this sequence under the project lock:
 1. **Budget gate** (`core.budget.over_budget`) — if the daily USD cap is hit, skip the run.
-2. **Clean-tree precondition** — abort if the project has uncommitted changes.
+2. **Stash WIP if dirty** — if the working tree has uncommitted changes, `git stash push -u` saves them; they're popped back at the end. The cron never aborts on a dirty tree.
 3. **`git fetch --all --prune`** so Aider works against fresh upstream.
 4. **Isolate on a new branch** `bot/cron-{id}-{YYYYMMDD-HHMMSS}`.
 5. **Prompt with memory** — `core.memory.memory_block(cron_id)` appends the last 3 summaries for that cron so it doesn't repeat itself.
-6. **Run Aider**, record token/cost usage.
+6. **Run Aider** (with `core.prompts.extract_model_marker` applied first so `@heavy`/`@weak` prefixes pick `AIDER_HEAVY_MODEL` or `AIDER_WEAK_MODEL`), record token/cost usage.
 7. **If diff present** → commit on the bot branch, create a `pending_changes` row, return to original branch.
 8. **If no diff** → delete the empty branch, store the text as a `suggested_tasks` row for `/do <id>` later.
-9. **Every run** gets a `cron_runs` record (used for memory + heartbeat).
+9. **`finally`: restore original branch + `stash pop`** if a stash was created. If pop fails (rare conflict), the user gets a Telegram warning and the WIP stays in `git stash list`.
+10. **Every run** gets a `cron_runs` record (used for memory + heartbeat).
 
 Approval messages use inline keyboards (`📋 Diff` / `🧪 Tests` / `✅ Push` / `❌ Descartar`) routed through `handlers.approvals.pending_callback` with callback data `pc:{pending_id}:{action}`. Tests and push checkout the bot branch, do the work, then restore the original branch — all inside the lock.
 
@@ -116,6 +119,15 @@ Aider's own chat history lives inside each project repo as `.aider.chat.history.
 ### Git commands
 
 `handlers.git` exposes `/git_*` handlers that shell out via `runners.git.run_git` (async subprocess, `GIT_TERMINAL_PROMPT=0` to avoid credential prompts). `/git_push` refuses to push from `main`/`master` as a safety rail. `/git_switch` refuses when the working tree is dirty. All git commands take the project lock.
+
+### Special cron prompts
+
+Prompts that start with `@<keyword>` bypass the Aider subprocess flow in `run_cron_job` and go through a dedicated handler. Currently:
+
+- **`@news [day|week] [extra]`** — calls `runners.news.fetch_all` to pull a curated set of RSS feeds (HN AI, ArXiv cs.AI, Simon Willison, The Decoder, Latent Space), filters by time window, and sends the raw titles to the LLM via `runners.llm.complete` with a "top-5 relevant items" system prompt. No repo is touched and no isolated branch is created; the cron's `project` field is only used for bookkeeping. Usage is still recorded against the daily budget with source `cron:{id}:news`.
+- **`@heavy <prompt>`** / **`@weak <prompt>`** — recognized everywhere a user-provided prompt hits Aider (`on_message` chat, cron prompts, `/do` if the suggestion starts with the marker). `core.prompts.extract_model_marker` strips the marker and returns the override model (`AIDER_HEAVY_MODEL` or `AIDER_WEAK_MODEL`); `run_aider(model=...)` uses it. Parser requires the exact token followed by whitespace or EOS (so `@heavier` is **not** a match). Order of resolution: first marker wins, so `@heavy @weak foo` runs with heavy and passes `@weak foo` as the prompt body. Chat messages that are only a marker without content are rejected with a usage hint.
+
+When adding another special prompt, route it in `core.scheduler.run_cron_job` before the default Aider flow.
 
 ### Cron scheduling details
 

@@ -18,8 +18,11 @@ if not TELEGRAM_ALLOWED_USER_IDS:
         "TELEGRAM_ALLOWED_USER_IDS no definido. Pon uno o varios IDs separados por coma en .env"
     )
 
-AIDER_MODEL = os.environ.get("AIDER_MODEL", "openrouter/deepseek/deepseek-chat")
+AIDER_MODEL = os.environ.get("AIDER_MODEL", "openrouter/deepseek/deepseek-v3.2")
 AIDER_WEAK_MODEL = os.environ.get("AIDER_WEAK_MODEL", AIDER_MODEL)
+AIDER_HEAVY_MODEL = os.environ.get(
+    "AIDER_HEAVY_MODEL", "openrouter/minimax/minimax-m2.7"
+)
 
 PROJECTS: dict[str, Path] = {
     "webapp": Path(os.environ["PROJECT_AVI_WEBAPP"]),

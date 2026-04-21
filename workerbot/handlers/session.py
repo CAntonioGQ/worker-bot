@@ -36,7 +36,8 @@ async def start(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"  /git_status /git_branches /git_switch <rama>\n"
         f"  /git_log [n] /git_diff [target] /git_fetch\n"
         f"  /git_commit <msg> /git_push\n\n"
-        f"Cualquier otro mensaje lo mando a Aider."
+        f"Cualquier otro mensaje lo mando a Aider.\n"
+        f"Prefija con `@heavy <prompt>` o `@weak <prompt>` para forzar modelo."
     )
 
 
